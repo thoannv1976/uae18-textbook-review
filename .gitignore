@@ -1,0 +1,26 @@
+node_modules/
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+next-env.d.ts
+
+# Env files — block everything except the template.
+.env*
+!.env.example
+
+# Various credential dumps that have a habit of landing next to the code.
+service-account*.json
+firebase-adminsdk*.json
+application_default_credentials.json
+.vercel
+
+# One-shot artefacts created during the bootstrap; never meant for VCS.
+*.bundle
+push.ps1
+
+.DS_Store
+.idea/
+.vscode/
+*.log

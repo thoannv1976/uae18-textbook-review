@@ -1,0 +1,18 @@
+rules_version = '2';
+
+// Uploaded textbook files live under `textbooks/{ownerId}/{textbookId}/...`.
+// Only the owner can read; no one writes via the client SDK (the upload
+// route on the Next.js server uses firebase-admin and bypasses these rules).
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    match /textbooks/{ownerId}/{textbookId}/{allPaths=**} {
+      allow read: if request.auth != null && request.auth.uid == ownerId;
+      allow write: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,51 @@
+rules_version = '2';
+
+// All collections are accessed through the Next.js server (firebase-admin
+// running on Cloud Run / App Hosting), so client SDKs are blocked by default.
+// We still encode the ownerId pattern as defense-in-depth in case a route
+// accidentally exposes the client db, and to make the security model explicit.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isOwner(resource) {
+      return request.auth != null && request.auth.uid == resource.data.ownerId;
+    }
+
+    function willOwn(payload) {
+      return request.auth != null && request.auth.uid == payload.ownerId;
+    }
+
+    match /textbooks/{id} {
+      allow read: if isOwner(resource);
+      allow create: if willOwn(request.resource);
+      allow update, delete: if isOwner(resource);
+    }
+
+    match /chunks/{id} {
+      allow read: if isOwner(resource);
+      // chunks are only written from the server.
+      allow write: if false;
+    }
+
+    match /evaluations/{id} {
+      allow read: if isOwner(resource);
+      allow write: if false;
+    }
+
+    match /revisions/{id} {
+      allow read: if isOwner(resource);
+      allow write: if false;
+    }
+
+    match /usage_logs/{id} {
+      // server-only
+      allow read, write: if false;
+    }
+
+    // Default deny.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

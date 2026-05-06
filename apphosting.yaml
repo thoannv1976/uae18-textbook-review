@@ -1,0 +1,90 @@
+# Firebase App Hosting runtime configuration for `textbook-review` backend.
+# Project: dggt-9fe0c — Region: asia-southeast1
+# Docs: https://firebase.google.com/docs/app-hosting/configure
+
+runConfig:
+  cpu: 2
+  memoryMiB: 2048
+  maxInstances: 5
+  minInstances: 0
+  concurrency: 40
+  # Cap below the Cloud Run hard ceiling (3600s) but generous enough to finish
+  # multi-chunk textbook evaluation. Per-call evaluator timeout is enforced in
+  # code (see src/lib/claude.ts) so the SDK fails cleanly before the platform
+  # kills the socket.
+  timeoutSeconds: 540
+
+env:
+  - variable: ANTHROPIC_MODEL
+    value: claude-sonnet-4-6
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: FIREBASE_PROJECT_ID
+    value: dggt-9fe0c
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: NEXT_PUBLIC_FIREBASE_PROJECT_ID
+    value: dggt-9fe0c
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
+    value: dggt-9fe0c.firebaseapp.com
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
+    value: dggt-9fe0c.appspot.com
+    availability:
+      - BUILD
+      - RUNTIME
+
+  # ----- Secrets (stored in Google Secret Manager) -----
+  # Create with:
+  #   firebase apphosting:secrets:set ANTHROPIC_API_KEY
+  #   firebase apphosting:secrets:set FIREBASE_SERVICE_ACCOUNT_JSON
+  #   firebase apphosting:secrets:set NEXT_PUBLIC_FIREBASE_API_KEY
+  #   firebase apphosting:secrets:set NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
+  #   firebase apphosting:secrets:set NEXT_PUBLIC_FIREBASE_APP_ID
+  # Then grant backend access:
+  #   firebase apphosting:secrets:grantaccess <NAME> --backend textbook-review
+
+  - variable: ANTHROPIC_API_KEY
+    secret: ANTHROPIC_API_KEY
+    availability:
+      - RUNTIME
+
+  - variable: FIREBASE_SERVICE_ACCOUNT_JSON
+    secret: FIREBASE_SERVICE_ACCOUNT_JSON
+    availability:
+      - RUNTIME
+
+  - variable: NEXT_PUBLIC_FIREBASE_API_KEY
+    secret: NEXT_PUBLIC_FIREBASE_API_KEY
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
+    secret: NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: NEXT_PUBLIC_FIREBASE_APP_ID
+    secret: NEXT_PUBLIC_FIREBASE_APP_ID
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: NEXT_PUBLIC_FIREBASE_APPCHECK_SITE_KEY
+    secret: NEXT_PUBLIC_FIREBASE_APPCHECK_SITE_KEY
+    availability:
+      - BUILD
+      - RUNTIME
