@@ -1,7 +1,7 @@
 import 'server-only';
-import { adminDb } from './firebase-admin';
+import { adminBucket, adminDb } from './firebase-admin';
 import { COL } from './constants';
-import type { TextbookDoc, Evaluation } from './types';
+import type { TextbookDoc, Evaluation, ChunkDoc } from './types';
 
 function nowIso() {
   return new Date().toISOString();
@@ -74,6 +74,76 @@ export async function deleteTextbook(
   for (const c of [COL.chunks, COL.evaluations, COL.revisions]) {
     const snap = await db.collection(c).where('textbookId', '==', id).get();
     await Promise.all(snap.docs.map((d) => d.ref.delete()));
+  }
+  // Cascade: original uploaded file in Storage. The folder layout is
+  // textbooks/{ownerId}/{textbookId}/... so we drop the whole prefix.
+  try {
+    await adminBucket().deleteFiles({
+      prefix: `textbooks/${ownerId}/${id}/`,
+    });
+  } catch (e) {
+    // Don't fail deletion of the Firestore record if Storage cleanup chokes.
+    console.error('storage cleanup failed for textbook', id, e);
+  }
+}
+
+// ---- chunks ----
+
+export async function listChunks(
+  textbookId: string,
+  ownerId: string,
+): Promise<ChunkDoc[]> {
+  const db = adminDb();
+  const snap = await db
+    .collection(COL.chunks)
+    .where('textbookId', '==', textbookId)
+    .where('ownerId', '==', ownerId)
+    .orderBy('chapterIndex', 'asc')
+    .get();
+  return snap.docs.map((d) => ({ id: d.id, ...(d.data() as ChunkDoc) }));
+}
+
+/**
+ * Replace all chunks for a textbook in one batch. Old chunks (from a previous
+ * parse run) are deleted first so re-parsing produces a clean set.
+ */
+export async function replaceChunks(
+  textbookId: string,
+  ownerId: string,
+  chunks: Omit<ChunkDoc, 'id' | 'textbookId' | 'ownerId' | 'createdAt' | 'updatedAt'>[],
+): Promise<void> {
+  const db = adminDb();
+  const existing = await db
+    .collection(COL.chunks)
+    .where('textbookId', '==', textbookId)
+    .get();
+
+  const ts = nowIso();
+  // Firestore caps writes per batch at 500. With our chunk sizes a textbook
+  // shouldn't get near that, but guard anyway.
+  const BATCH_LIMIT = 450;
+  const ops: { ref: FirebaseFirestore.DocumentReference; data?: Partial<ChunkDoc>; type: 'set' | 'delete' }[] = [];
+
+  for (const d of existing.docs) {
+    ops.push({ ref: d.ref, type: 'delete' });
+  }
+  for (const c of chunks) {
+    const ref = db.collection(COL.chunks).doc();
+    ops.push({
+      ref,
+      type: 'set',
+      data: { ...c, textbookId, ownerId, createdAt: ts, updatedAt: ts },
+    });
+  }
+
+  for (let i = 0; i < ops.length; i += BATCH_LIMIT) {
+    const slice = ops.slice(i, i + BATCH_LIMIT);
+    const batch = db.batch();
+    for (const op of slice) {
+      if (op.type === 'delete') batch.delete(op.ref);
+      else batch.set(op.ref, op.data!);
+    }
+    await batch.commit();
   }
 }
 
