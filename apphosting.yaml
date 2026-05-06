@@ -83,8 +83,3 @@ env:
       - BUILD
       - RUNTIME
 
-  - variable: NEXT_PUBLIC_FIREBASE_APPCHECK_SITE_KEY
-    secret: NEXT_PUBLIC_FIREBASE_APPCHECK_SITE_KEY
-    availability:
-      - BUILD
-      - RUNTIME
