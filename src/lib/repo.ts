@@ -89,15 +89,14 @@ export async function deleteTextbook(
 
 // ---- chunks ----
 
-export async function listChunks(
-  textbookId: string,
-  ownerId: string,
-): Promise<ChunkDoc[]> {
+// Caller must have already verified textbook ownership (e.g. via getTextbook).
+// Filtering only by textbookId here keeps us inside the existing
+// (textbookId, chapterIndex) composite index.
+export async function listChunks(textbookId: string): Promise<ChunkDoc[]> {
   const db = adminDb();
   const snap = await db
     .collection(COL.chunks)
     .where('textbookId', '==', textbookId)
-    .where('ownerId', '==', ownerId)
     .orderBy('chapterIndex', 'asc')
     .get();
   return snap.docs.map((d) => ({ id: d.id, ...(d.data() as ChunkDoc) }));

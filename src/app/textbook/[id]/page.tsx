@@ -34,7 +34,15 @@ export default async function TextbookDetailPage({
   const textbook = await getTextbook(params.id, user.uid);
   if (!textbook) notFound();
 
-  const chunks = textbook.status === 'uploaded' ? [] : await listChunks(params.id, user.uid);
+  let chunks: Awaited<ReturnType<typeof listChunks>> = [];
+  let chunksErr: string | null = null;
+  if (textbook.status !== 'uploaded') {
+    try {
+      chunks = await listChunks(params.id);
+    } catch (e) {
+      chunksErr = e instanceof Error ? e.message : String(e);
+    }
+  }
   const totalTokens = chunks.reduce((s, c) => s + (c.tokensIn ?? 0), 0);
   const status = STATUS_LABELS[textbook.status ?? 'uploaded'] ?? STATUS_LABELS.uploaded;
 
@@ -73,6 +81,12 @@ export default async function TextbookDetailPage({
       {textbook.status === 'uploaded' && (
         <div className="card border-amber-200 bg-amber-50 text-amber-800 text-sm">
           File đã upload nhưng chưa được tách chương. Bấm <strong>Phân tích & tách chương</strong> phía trên.
+        </div>
+      )}
+
+      {chunksErr && (
+        <div className="card border-red-200 bg-red-50 text-red-700 text-sm">
+          Không tải được danh sách chương: {chunksErr}
         </div>
       )}
 
