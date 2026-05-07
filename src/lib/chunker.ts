@@ -27,6 +27,15 @@ export function estimateTokens(text: string): number {
 const HEADING_RE =
   /^\s*(?:chương|chapter|bài|phần|part)\s+(?:[0-9]+|[ivxlcdm]+)\b[^\n]*$/im;
 
+// A real heading is a single line of title prose; a paragraph that happens to
+// open with "Chương N ..." can be hundreds of characters long. Cap the line
+// length so we don't promote prose into a heading and lose its body content.
+const MAX_HEADING_CHARS = 200;
+
+function isHeadingLine(line: string): boolean {
+  return line.length <= MAX_HEADING_CHARS && HEADING_RE.test(line);
+}
+
 interface DetectedSection {
   title: string;
   text: string;
@@ -43,8 +52,7 @@ function detectSections(fullText: string): DetectedSection[] {
   let current: DetectedSection | null = null;
 
   for (const line of lines) {
-    const m = line.match(HEADING_RE);
-    if (m) {
+    if (isHeadingLine(line)) {
       if (current) sections.push(current);
       current = { title: line.trim(), text: '' };
     } else if (current) {
@@ -64,6 +72,34 @@ function detectSections(fullText: string): DetectedSection[] {
 
   // Drop empty sections (a heading immediately followed by another heading).
   return sections.filter((s) => s.text.trim().length > 0);
+}
+
+// Most Vietnamese textbooks open with a table of contents that lists every
+// chapter heading. Our regex picks those up too, which produces dozens of
+// near-empty sections (just a heading + page number). Anything below this
+// threshold gets folded back into the previous section so the TOC ends up as
+// part of the front matter rather than its own pile of 12-token chunks.
+const MIN_BODY_CHARS = 300;
+
+function mergeShortSections(
+  sections: DetectedSection[],
+): DetectedSection[] {
+  if (sections.length === 0) return sections;
+  const out: DetectedSection[] = [{ ...sections[0] }];
+  for (let i = 1; i < sections.length; i++) {
+    const s = sections[i];
+    const bodyLen = s.text.trim().length;
+    const last = out[out.length - 1];
+    if (bodyLen < MIN_BODY_CHARS) {
+      // Fold "[heading]\n[body]" into the running section. Keep the prior
+      // title — the heading we're folding is almost certainly a TOC line.
+      const piece = bodyLen > 0 ? `${s.title}\n${s.text}` : s.title;
+      last.text = last.text ? `${last.text}\n\n${piece}` : piece;
+    } else {
+      out.push({ ...s });
+    }
+  }
+  return out;
 }
 
 /**
@@ -126,6 +162,8 @@ export function chunkDocument(fullText: string): RawChunk[] {
   let sections = detectSections(text);
   if (sections.length === 0) {
     sections = [{ title: 'Toàn bộ tài liệu', text }];
+  } else {
+    sections = mergeShortSections(sections);
   }
 
   const sized = sections.flatMap(splitOversized);
