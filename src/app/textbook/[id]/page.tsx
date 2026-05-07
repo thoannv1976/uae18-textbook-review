@@ -101,6 +101,15 @@ export default async function TextbookDetailPage({
                     {c.chapterIndex}. {c.chapterTitle}
                   </div>
                   <div className="text-xs text-slate-500 mt-0.5">
+                    {c.startPage != null && (
+                      <>
+                        Trang {c.startPage}
+                        {c.endPage != null && c.endPage !== c.startPage
+                          ? `–${c.endPage}`
+                          : ''}
+                        {' • '}
+                      </>
+                    )}
                     {(c.text ?? '').length.toLocaleString('vi-VN')} ký tự
                     {c.tokensIn != null && (
                       <> • ~{c.tokensIn.toLocaleString('vi-VN')} token</>

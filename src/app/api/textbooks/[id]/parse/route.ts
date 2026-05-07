@@ -115,19 +115,30 @@ export async function POST(
       chapterTitle: c.chapterTitle,
       text: c.text,
       tokensIn: c.estimatedTokens,
+      startPage: c.startPage,
+      endPage: c.endPage,
     })),
   );
+
+  // For DOCX/TXT the parser can't count pages, but if the TOC told us each
+  // chapter's start page we can take the largest endPage as a reasonable
+  // total. PDF gets the authoritative page count from the parser.
+  const maxTocPage = rawChunks.reduce((max, c) => {
+    const p = c.endPage ?? c.startPage ?? 0;
+    return p > max ? p : max;
+  }, 0);
+  const totalPages = parsed.pageCount ?? (maxTocPage > 0 ? maxTocPage : undefined);
 
   await updateTextbook(id, user.uid, {
     status: 'parsed',
     chapterCount: rawChunks.length,
-    totalPages: parsed.pageCount,
+    totalPages,
   });
 
   return NextResponse.json({
     ok: true,
     chapterCount: rawChunks.length,
-    totalPages: parsed.pageCount,
+    totalPages,
     totalTokens: rawChunks.reduce((sum, c) => sum + c.estimatedTokens, 0),
     sampleTitles: rawChunks.slice(0, 5).map((c) => c.chapterTitle),
   });
