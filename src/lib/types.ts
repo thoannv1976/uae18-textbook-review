@@ -46,6 +46,8 @@ export interface ChunkDoc {
   summary?: string;
   partialEval?: ChunkPartialEval;
   evidence?: string[];
+  suggestions?: string[];
+  evaluatedAt?: string;
   model?: string;
   tokensIn?: number;
   tokensOut?: number;

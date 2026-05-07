@@ -9,7 +9,11 @@ import {
   updateChunk,
   updateTextbook,
 } from '@/lib/repo';
-import { aggregateEvaluation, evaluateAllChunks } from '@/lib/evaluator';
+import {
+  aggregateEvaluation,
+  chunkToResult,
+  evaluateAllChunks,
+} from '@/lib/evaluator';
 import { CLAUDE_MODEL } from '@/lib/claude';
 
 export const runtime = 'nodejs';
@@ -31,8 +35,6 @@ export async function POST(
     return NextResponse.json({ error: 'Bạn cần đăng nhập.' }, { status: 401 });
   }
 
-  // Quota check happens BEFORE we touch Claude so a rate-limited user sees a
-  // clean 429 instead of being charged for partial work.
   try {
     await enforceRateLimit(user.uid, ROUTE_NAME);
   } catch (e) {
@@ -67,12 +69,45 @@ export async function POST(
   await updateTextbook(id, user.uid, { status: 'evaluating' });
 
   const startedAt = Date.now();
-  let results;
-  try {
-    results = await evaluateAllChunks(textbook, chunks);
-  } catch (e) {
+  // Promise.allSettled inside evaluateAllChunks means we keep partial successes
+  // even if some chunks 429'd. We persist what we got, then aggregate.
+  const { results, failures } = await evaluateAllChunks(textbook, chunks);
+
+  // Save freshly-evaluated chunks.
+  await Promise.all(
+    results.map((r) =>
+      r.chunk.id
+        ? updateChunk(r.chunk.id, {
+            summary: r.eval.summary,
+            partialEval: { scores: r.eval.scores },
+            evidence: r.eval.evidence,
+            suggestions: r.eval.suggestions,
+            tokensIn:
+              r.usage.inputTokens +
+              r.usage.cacheReadTokens +
+              r.usage.cacheCreationTokens,
+            tokensOut: r.usage.outputTokens,
+            model: CLAUDE_MODEL,
+            evaluatedAt: new Date().toISOString(),
+          })
+        : Promise.resolve(),
+    ),
+  );
+
+  // Compose aggregate input: prefer freshly-evaluated chunks, fall back to
+  // any prior partialEval persisted on the chunks we couldn't re-eval (e.g.
+  // a chunk that 429'd this run but had a successful eval last time).
+  const freshIds = new Set(results.map((r) => r.chunk.id));
+  const reused = chunks
+    .filter((c) => c.id && !freshIds.has(c.id))
+    .map((c) => chunkToResult(c))
+    .filter((r): r is NonNullable<typeof r> => r != null);
+  const allResults = [...results, ...reused];
+
+  if (allResults.length === 0) {
+    // Total failure — no chunk has a usable eval. Surface the first error.
     await updateTextbook(id, user.uid, { status: 'failed' }).catch(() => {});
-    const msg = e instanceof Error ? e.message : 'Đánh giá thất bại.';
+    const msg = failures[0]?.message ?? 'Đánh giá thất bại.';
     await logUsage({
       ownerId: user.uid,
       route: ROUTE_NAME,
@@ -83,28 +118,20 @@ export async function POST(
       status: 'error',
       errorCode: msg.slice(0, 200),
     }).catch(() => {});
-    console.error('evaluate failed', e);
-    return NextResponse.json({ error: msg }, { status: 502 });
+    return NextResponse.json(
+      {
+        error: msg,
+        failures: failures.map((f) => ({
+          chunkId: f.chunk.id,
+          chapterTitle: f.chunk.chapterTitle,
+          message: f.message,
+        })),
+      },
+      { status: 502 },
+    );
   }
 
-  // Persist per-chunk eval to the chunks themselves so feature (e) can show
-  // chapter-level breakdowns later without re-running Claude.
-  await Promise.all(
-    results.map((r) =>
-      r.chunk.id
-        ? updateChunk(r.chunk.id, {
-            summary: r.eval.summary,
-            partialEval: { scores: r.eval.scores },
-            evidence: r.eval.evidence,
-            tokensIn: r.usage.inputTokens + r.usage.cacheReadTokens + r.usage.cacheCreationTokens,
-            tokensOut: r.usage.outputTokens,
-            model: CLAUDE_MODEL,
-          })
-        : Promise.resolve(),
-    ),
-  );
-
-  const evaluation = aggregateEvaluation(id, user.uid, results);
+  const evaluation = aggregateEvaluation(id, user.uid, allResults);
   const evalId = await saveEvaluation(id, user.uid, evaluation);
 
   await logUsage({
@@ -114,14 +141,22 @@ export async function POST(
     tokensIn: evaluation.totalTokensIn ?? 0,
     tokensOut: evaluation.totalTokensOut ?? 0,
     latencyMs: Date.now() - startedAt,
-    status: 'ok',
+    status: failures.length > 0 ? 'error' : 'ok',
+    errorCode: failures.length > 0 ? `partial: ${failures.length} chương fail` : undefined,
   }).catch(() => {});
 
   return NextResponse.json({
     ok: true,
     evaluationId: evalId,
     overallScore: evaluation.overallScore,
-    chapterCount: results.length,
+    chaptersEvaluated: results.length,
+    chaptersReused: reused.length,
+    chaptersFailed: failures.length,
+    failures: failures.map((f) => ({
+      chunkId: f.chunk.id,
+      chapterTitle: f.chunk.chapterTitle,
+      message: f.message,
+    })),
     tokensIn: evaluation.totalTokensIn,
     tokensOut: evaluation.totalTokensOut,
     latencyMs: Date.now() - startedAt,

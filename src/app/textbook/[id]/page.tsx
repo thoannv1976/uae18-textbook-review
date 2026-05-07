@@ -4,6 +4,7 @@ import { getCurrentUser } from '@/lib/auth';
 import { getEvaluation, getTextbook, listChunks } from '@/lib/repo';
 import TextbookActions from './TextbookActions';
 import EvaluationView from './EvaluationView';
+import ChunksList from './ChunksList';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,6 +52,10 @@ export default async function TextbookDetailPage({
     ? await getEvaluation(textbook.latestEvaluationId, user.uid).catch(() => null)
     : null;
 
+  const evaluatedChapters = chunks.filter(
+    (c) => c.partialEval?.scores && c.partialEval.scores.length > 0,
+  ).length;
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -82,6 +87,8 @@ export default async function TextbookDetailPage({
         status={textbook.status ?? 'uploaded'}
         hasChunks={chunks.length > 0}
         hasEvaluation={evaluation != null}
+        evaluatedChapters={evaluatedChapters}
+        totalChapters={chunks.length}
       />
 
       {evaluation && <EvaluationView evaluation={evaluation} />}
@@ -99,35 +106,7 @@ export default async function TextbookDetailPage({
       )}
 
       {chunks.length > 0 && (
-        <div className="card">
-          <h2 className="font-semibold mb-3">Danh sách chương ({chunks.length})</h2>
-          <div className="divide-y divide-slate-100">
-            {chunks.map((c) => (
-              <div key={c.id} className="py-3 flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="text-sm font-medium text-slate-900 truncate">
-                    {c.chapterIndex}. {c.chapterTitle}
-                  </div>
-                  <div className="text-xs text-slate-500 mt-0.5">
-                    {c.startPage != null && (
-                      <>
-                        Trang {c.startPage}
-                        {c.endPage != null && c.endPage !== c.startPage
-                          ? `–${c.endPage}`
-                          : ''}
-                        {' • '}
-                      </>
-                    )}
-                    {(c.text ?? '').length.toLocaleString('vi-VN')} ký tự
-                    {c.tokensIn != null && (
-                      <> • ~{c.tokensIn.toLocaleString('vi-VN')} token</>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+        <ChunksList textbookId={params.id} chunks={chunks} />
       )}
 
       <details className="card">
