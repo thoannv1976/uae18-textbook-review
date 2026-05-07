@@ -144,40 +144,103 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, n));
 }
 
-async function withRetry<T>(fn: () => Promise<T>, attempts = 2): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
       return await fn();
     } catch (e) {
       lastErr = e;
-      // Brief backoff before retry; rate-limit errors will retry too.
-      await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
+      // Exponential backoff: 2s, 4s, 8s. The SDK already retries with its own
+      // backoff (MAX_RETRIES=4) per call, so this outer loop only fires when
+      // every SDK retry was exhausted (typically a sustained 429).
+      await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, i)));
     }
   }
   throw lastErr;
 }
 
+export interface ChunkEvalFailure {
+  chunk: ChunkDoc;
+  message: string;
+}
+
+export interface BulkEvalOutcome {
+  results: ChunkEvalResult[];
+  failures: ChunkEvalFailure[];
+}
+
+/**
+ * Evaluate every chunk in parallel (capped at CHUNK_CONCURRENCY). One failed
+ * chunk no longer poisons the rest — successes are still returned and the
+ * caller can persist them, then retry only the failed ones via the per-chunk
+ * endpoint.
+ */
 export async function evaluateAllChunks(
   textbook: TextbookDoc,
   chunks: ChunkDoc[],
-): Promise<ChunkEvalResult[]> {
-  if (chunks.length === 0) return [];
+): Promise<BulkEvalOutcome> {
+  if (chunks.length === 0) return { results: [], failures: [] };
   const systemPrompt = buildSystemPrompt();
   const limit = pLimit(CHUNK_CONCURRENCY);
 
-  const promises = chunks.map((c) =>
-    limit(async () => {
-      try {
-        return await withRetry(() => callClaudeForChunk(textbook, c, systemPrompt));
-      } catch (e) {
-        throw new Error(
-          `Đánh giá chương "${c.chapterTitle}" thất bại: ${describeClaudeError(e)}`,
-        );
-      }
-    }),
+  const settled = await Promise.allSettled(
+    chunks.map((c) =>
+      limit(() => withRetry(() => callClaudeForChunk(textbook, c, systemPrompt))),
+    ),
   );
-  return Promise.all(promises);
+
+  const results: ChunkEvalResult[] = [];
+  const failures: ChunkEvalFailure[] = [];
+  for (let i = 0; i < settled.length; i++) {
+    const s = settled[i];
+    if (s.status === 'fulfilled') {
+      results.push(s.value);
+    } else {
+      failures.push({
+        chunk: chunks[i],
+        message: describeClaudeError(s.reason),
+      });
+    }
+  }
+  return { results, failures };
+}
+
+/**
+ * Evaluate exactly one chunk. Used by the per-chapter "Đánh giá lại" button so
+ * a user who hits a transient 429 can retry just the failed chapter.
+ */
+export async function evaluateSingleChunk(
+  textbook: TextbookDoc,
+  chunk: ChunkDoc,
+): Promise<ChunkEvalResult> {
+  const systemPrompt = buildSystemPrompt();
+  return withRetry(() => callClaudeForChunk(textbook, chunk, systemPrompt));
+}
+
+/**
+ * Reconstruct a ChunkEvalResult from a chunk that already has partialEval
+ * persisted (per-chapter button + reload, or post-aggregate refresh). Returns
+ * null when the chunk hasn't been evaluated yet so the caller can decide
+ * whether to skip it or re-eval.
+ */
+export function chunkToResult(chunk: ChunkDoc): ChunkEvalResult | null {
+  if (!chunk.partialEval || !chunk.summary) return null;
+  return {
+    chunk,
+    eval: {
+      summary: chunk.summary,
+      scores: chunk.partialEval.scores,
+      evidence: chunk.evidence ?? [],
+      suggestions: chunk.suggestions ?? [],
+    },
+    usage: {
+      inputTokens: chunk.tokensIn ?? 0,
+      outputTokens: chunk.tokensOut ?? 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    },
+  };
 }
 
 export function aggregateEvaluation(

@@ -162,6 +162,24 @@ export async function updateChunk(
     .set({ ...patch, updatedAt: nowIso() }, { merge: true });
 }
 
+/**
+ * Fetch a single chunk and assert it belongs to the given textbook + owner.
+ * Returns null when missing or owned by another user — callers should turn
+ * that into a 404 to avoid leaking the existence of other people's chunks.
+ */
+export async function getChunk(
+  chunkId: string,
+  textbookId: string,
+  ownerId: string,
+): Promise<ChunkDoc | null> {
+  const db = adminDb();
+  const snap = await db.collection(COL.chunks).doc(chunkId).get();
+  if (!snap.exists) return null;
+  const data = { id: snap.id, ...(snap.data() as ChunkDoc) };
+  if (data.textbookId !== textbookId || data.ownerId !== ownerId) return null;
+  return data;
+}
+
 // ---- evaluations ----
 
 export async function saveEvaluation(

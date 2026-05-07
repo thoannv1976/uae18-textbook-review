@@ -8,7 +8,10 @@ let _client: Anthropic | null = null;
 // Per-request budget of 240s leaves room for chunked retries inside one HTTP
 // turn.
 const REQUEST_TIMEOUT_MS = 240_000;
-const MAX_RETRIES = 1;
+// SDK does exponential backoff respecting Anthropic's `retry-after` header,
+// so 4 retries handles transient 429s and 5xx without intervention. We still
+// wrap the call in our own withRetry() for safety on multi-chunk runs.
+const MAX_RETRIES = 4;
 
 export function claude(): Anthropic {
   if (_client) return _client;
