@@ -1,8 +1,9 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth';
-import { getTextbook, listChunks } from '@/lib/repo';
+import { getEvaluation, getTextbook, listChunks } from '@/lib/repo';
 import TextbookActions from './TextbookActions';
+import EvaluationView from './EvaluationView';
 
 export const dynamic = 'force-dynamic';
 
@@ -46,6 +47,10 @@ export default async function TextbookDetailPage({
   const totalTokens = chunks.reduce((s, c) => s + (c.tokensIn ?? 0), 0);
   const status = STATUS_LABELS[textbook.status ?? 'uploaded'] ?? STATUS_LABELS.uploaded;
 
+  const evaluation = textbook.latestEvaluationId
+    ? await getEvaluation(textbook.latestEvaluationId, user.uid).catch(() => null)
+    : null;
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -76,7 +81,10 @@ export default async function TextbookDetailPage({
         id={params.id}
         status={textbook.status ?? 'uploaded'}
         hasChunks={chunks.length > 0}
+        hasEvaluation={evaluation != null}
       />
+
+      {evaluation && <EvaluationView evaluation={evaluation} />}
 
       {textbook.status === 'uploaded' && (
         <div className="card border-amber-200 bg-amber-50 text-amber-800 text-sm">

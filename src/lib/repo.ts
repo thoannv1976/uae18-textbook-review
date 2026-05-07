@@ -1,7 +1,12 @@
 import 'server-only';
 import { adminBucket, adminDb } from './firebase-admin';
-import { COL } from './constants';
-import type { TextbookDoc, Evaluation, ChunkDoc } from './types';
+import { COL, RATE_LIMIT_PER_DAY, RATE_LIMIT_PER_HOUR } from './constants';
+import type {
+  TextbookDoc,
+  Evaluation,
+  ChunkDoc,
+  UsageLogDoc,
+} from './types';
 
 function nowIso() {
   return new Date().toISOString();
@@ -146,7 +151,18 @@ export async function replaceChunks(
   }
 }
 
-// ---- evaluations (used in feature c/d, exported now so types compile) ----
+export async function updateChunk(
+  chunkId: string,
+  patch: Partial<ChunkDoc>,
+): Promise<void> {
+  const db = adminDb();
+  await db
+    .collection(COL.chunks)
+    .doc(chunkId)
+    .set({ ...patch, updatedAt: nowIso() }, { merge: true });
+}
+
+// ---- evaluations ----
 
 export async function saveEvaluation(
   textbookId: string,
@@ -170,4 +186,73 @@ export async function saveEvaluation(
       { merge: true },
     );
   return ref.id;
+}
+
+export async function getEvaluation(
+  id: string,
+  ownerId: string,
+): Promise<Evaluation | null> {
+  const db = adminDb();
+  const snap = await db.collection(COL.evaluations).doc(id).get();
+  if (!snap.exists) return null;
+  const data = { id: snap.id, ...(snap.data() as Evaluation) };
+  if (data.ownerId !== ownerId) return null;
+  return data;
+}
+
+// ---- usage logs / rate limit ----
+
+export async function logUsage(
+  log: Omit<UsageLogDoc, 'id' | 'createdAt'>,
+): Promise<void> {
+  const db = adminDb();
+  await db.collection(COL.usageLogs).add({ ...log, createdAt: nowIso() });
+}
+
+/**
+ * Throws an Error with code='RATE_LIMITED' if the current owner has exceeded
+ * either the hourly or daily quota for high-cost routes (parse / evaluate).
+ * Counts only successful invocations of the matching route.
+ */
+export async function enforceRateLimit(
+  ownerId: string,
+  route: string,
+): Promise<void> {
+  const db = adminDb();
+  const now = Date.now();
+  const hourAgo = new Date(now - 60 * 60 * 1000).toISOString();
+  const dayAgo = new Date(now - 24 * 60 * 60 * 1000).toISOString();
+
+  // We have a (ownerId, createdAt) composite index already; filter route +
+  // status in memory rather than adding a 4-field index just for quotas.
+  const snap = await db
+    .collection(COL.usageLogs)
+    .where('ownerId', '==', ownerId)
+    .where('createdAt', '>=', dayAgo)
+    .orderBy('createdAt', 'desc')
+    .get();
+
+  let hourlyCount = 0;
+  let dailyCount = 0;
+  for (const doc of snap.docs) {
+    const data = doc.data() as UsageLogDoc;
+    if (data.route !== route || data.status !== 'ok') continue;
+    dailyCount++;
+    if ((data.createdAt ?? '') >= hourAgo) hourlyCount++;
+  }
+
+  if (hourlyCount >= RATE_LIMIT_PER_HOUR) {
+    const e = new Error(
+      `Đã chạm giới hạn ${RATE_LIMIT_PER_HOUR} lượt/giờ cho thao tác này. Hãy thử lại sau.`,
+    );
+    (e as Error & { code: string }).code = 'RATE_LIMITED';
+    throw e;
+  }
+  if (dailyCount >= RATE_LIMIT_PER_DAY) {
+    const e = new Error(
+      `Đã chạm giới hạn ${RATE_LIMIT_PER_DAY} lượt/ngày cho thao tác này. Vui lòng quay lại ngày mai.`,
+    );
+    (e as Error & { code: string }).code = 'RATE_LIMITED';
+    throw e;
+  }
 }
