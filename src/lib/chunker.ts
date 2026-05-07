@@ -9,6 +9,8 @@ export interface RawChunk {
   chapterTitle: string;
   text: string;
   estimatedTokens: number;
+  startPage?: number;
+  endPage?: number;
 }
 
 // Heuristic: 1 token ≈ 4 characters for Vietnamese/English mixed text. Good
@@ -36,9 +38,26 @@ function isHeadingLine(line: string): boolean {
   return line.length <= MAX_HEADING_CHARS && HEADING_RE.test(line);
 }
 
+// "anything <space> 1-4 digits" at end of string. Used both for spotting TOC
+// entries (heading title that ends with the chapter's start page) and for
+// stripping the page off a title before fuzzy-matching real chapter bodies
+// against the TOC map.
+const TRAILING_PAGE_RE = /^(.+?)\s+(\d{1,4})\s*$/;
+
 interface DetectedSection {
   title: string;
   text: string;
+  startPage?: number;
+  endPage?: number;
+}
+
+function normalizeTitle(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function stripTrailingPage(title: string): string {
+  const m = title.match(TRAILING_PAGE_RE);
+  return m ? m[1].trim() : title;
 }
 
 /**
@@ -70,20 +89,94 @@ function detectSections(fullText: string): DetectedSection[] {
   }
   if (current) sections.push(current);
 
-  // Drop empty sections (a heading immediately followed by another heading).
-  return sections.filter((s) => s.text.trim().length > 0);
+  // Keep empty-body sections too: they're often TOC entries whose body is
+  // just the next heading line. We need them visible to extractToc; the
+  // dropTocEntries / mergeShortSections passes will clean them up later.
+  return sections;
 }
 
-// Most Vietnamese textbooks open with a table of contents that lists every
-// chapter heading. Our regex picks those up too, which produces dozens of
-// near-empty sections (just a heading + page number). Anything below this
-// threshold gets folded back into the previous section so the TOC ends up as
-// part of the front matter rather than its own pile of 12-token chunks.
+// A section looks like a TOC entry when its title ends with a 1-4 digit
+// page number AND its body is short (real chapters always have substantial
+// body). 1500 chars is a generous upper bound so TOC entries with a few
+// sub-section lines (1.1, 1.2, ...) still get picked up.
+const TOC_BODY_MAX_CHARS = 1500;
+
+function isLikelyTocEntry(s: DetectedSection): boolean {
+  if (s.text.trim().length >= TOC_BODY_MAX_CHARS) return false;
+  return TRAILING_PAGE_RE.test(s.title);
+}
+
+interface TocEntry {
+  cleanTitle: string;
+  page: number;
+}
+
+function extractToc(sections: DetectedSection[]): TocEntry[] {
+  const entries: TocEntry[] = [];
+  for (const s of sections) {
+    if (!isLikelyTocEntry(s)) continue;
+    const m = s.title.match(TRAILING_PAGE_RE);
+    if (m) {
+      entries.push({
+        cleanTitle: normalizeTitle(m[1]),
+        page: parseInt(m[2], 10),
+      });
+    }
+  }
+  // Sort by page so endPage lookups can use the next entry's start.
+  entries.sort((a, b) => a.page - b.page);
+  return entries;
+}
+
+function findTocPage(toc: TocEntry[], chapterTitle: string): number | undefined {
+  if (toc.length === 0) return undefined;
+  const cleanCh = normalizeTitle(stripTrailingPage(chapterTitle));
+  // 1) Exact match (the common case once page numbers are stripped).
+  for (const e of toc) {
+    if (e.cleanTitle === cleanCh) return e.page;
+  }
+  // 2) Prefix-tolerant match: TOC may include a subtitle the body heading
+  //    omits (or vice versa). Require at least 12 chars of overlap so we
+  //    don't collide on something as short as "Chương 1".
+  for (const e of toc) {
+    if (
+      cleanCh.length >= 12 &&
+      (e.cleanTitle.startsWith(cleanCh) || cleanCh.startsWith(e.cleanTitle))
+    ) {
+      return e.page;
+    }
+  }
+  return undefined;
+}
+
+function attachPages(
+  sections: DetectedSection[],
+  toc: TocEntry[],
+): DetectedSection[] {
+  if (toc.length === 0) return sections;
+  const pages = toc.map((e) => e.page);
+  return sections.map((s) => {
+    if (s.startPage != null) return s; // already annotated
+    const startPage = findTocPage(toc, s.title);
+    if (startPage == null) return s;
+    const next = pages.find((p) => p > startPage);
+    return {
+      ...s,
+      startPage,
+      endPage: next != null ? next - 1 : undefined,
+    };
+  });
+}
+
+function dropTocEntries(sections: DetectedSection[]): DetectedSection[] {
+  return sections.filter((s) => !isLikelyTocEntry(s));
+}
+
+// After dropping TOC and front-matter noise, fold any still-tiny section into
+// the previous one so we never emit a 6-char "chapter".
 const MIN_BODY_CHARS = 300;
 
-function mergeShortSections(
-  sections: DetectedSection[],
-): DetectedSection[] {
+function mergeShortSections(sections: DetectedSection[]): DetectedSection[] {
   if (sections.length === 0) return sections;
   const out: DetectedSection[] = [{ ...sections[0] }];
   for (let i = 1; i < sections.length; i++) {
@@ -91,8 +184,6 @@ function mergeShortSections(
     const bodyLen = s.text.trim().length;
     const last = out[out.length - 1];
     if (bodyLen < MIN_BODY_CHARS) {
-      // Fold "[heading]\n[body]" into the running section. Keep the prior
-      // title — the heading we're folding is almost certainly a TOC line.
       const piece = bodyLen > 0 ? `${s.title}\n${s.text}` : s.title;
       last.text = last.text ? `${last.text}\n\n${piece}` : piece;
     } else {
@@ -104,7 +195,8 @@ function mergeShortSections(
 
 /**
  * Re-split an oversized section by paragraph so no chunk exceeds
- * MAX_CHUNK_TOKENS. We aim for TARGET_CHUNK_TOKENS per chunk.
+ * MAX_CHUNK_TOKENS. We aim for TARGET_CHUNK_TOKENS per chunk. Page metadata
+ * is replicated on every part so the user still sees the chapter's range.
  */
 function splitOversized(section: DetectedSection): DetectedSection[] {
   if (estimateTokens(section.text) <= MAX_CHUNK_TOKENS) {
@@ -123,6 +215,8 @@ function splitOversized(section: DetectedSection): DetectedSection[] {
           ? section.title
           : `${section.title} (phần ${part})`,
         text: buffer.trim(),
+        startPage: section.startPage,
+        endPage: section.endPage,
       });
       part++;
       buffer = '';
@@ -137,8 +231,6 @@ function splitOversized(section: DetectedSection): DetectedSection[] {
     } else {
       buffer = candidate;
     }
-    // Hard cap: a single paragraph blowing past MAX_CHUNK_TOKENS gets
-    // sliced by character count as a last resort.
     if (estimateTokens(buffer) > MAX_CHUNK_TOKENS) {
       const chars = MAX_CHUNK_TOKENS * 4;
       out.push({
@@ -146,6 +238,8 @@ function splitOversized(section: DetectedSection): DetectedSection[] {
           ? section.title
           : `${section.title} (phần ${part})`,
         text: buffer.slice(0, chars),
+        startPage: section.startPage,
+        endPage: section.endPage,
       });
       buffer = buffer.slice(chars);
       part++;
@@ -162,9 +256,21 @@ export function chunkDocument(fullText: string): RawChunk[] {
   let sections = detectSections(text);
   if (sections.length === 0) {
     sections = [{ title: 'Toàn bộ tài liệu', text }];
-  } else {
-    sections = mergeShortSections(sections);
   }
+
+  // Build the TOC map BEFORE removing TOC sections — they're the source of
+  // truth for chapter page numbers.
+  const toc = extractToc(sections);
+
+  // Strip TOC entries (they're metadata, not content).
+  sections = dropTocEntries(sections);
+
+  // Fold any remaining tiny non-TOC sections forward (e.g. an orphan heading
+  // before the actual chapter body).
+  sections = mergeShortSections(sections);
+
+  // Attach pages to real chapters from the TOC map.
+  sections = attachPages(sections, toc);
 
   const sized = sections.flatMap(splitOversized);
 
@@ -176,5 +282,7 @@ export function chunkDocument(fullText: string): RawChunk[] {
     chapterTitle: s.title,
     text: s.text,
     estimatedTokens: estimateTokens(s.text),
+    startPage: s.startPage,
+    endPage: s.endPage,
   }));
 }
